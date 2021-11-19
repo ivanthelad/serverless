@@ -1,0 +1,104 @@
+# This is a basic workflow to help you get started with Actions
+
+name: Deploy APIM Api definitions
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Which env you are updating"
+        default: "blue"
+        required: true
+        type: choice
+        options: 
+        - original
+        - blue
+        - green
+        
+env:
+  DEPNAME: "DepApi${{ github.run_number }}" #Deployment Name
+  AZCLIVERSION: latest #2.30.0 #Pinning to a specific AZ CLI version
+
+concurrency: github.event.inputs.resourcegroup
+
+jobs:
+  DeployAPIs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      
+      - name: Job parameter check
+        run: |       
+          echo "environment is: ${{ github.event.inputs.environment }}"
+    
+          echo "Deployment name is ${{ env.DEPNAME }}"
+          echo "Ref is ${{ github.ref }}"
+          echo "EventTrigger name is ${{github.event_name}}"
+          echo "AZCLIVERSION is ${{ env.AZCLIVERSION }}"
+          
+          echo "Inputs are ${{ tojson(github.event.inputs) }}"
+          
+      - name: Set up variables for environment
+        id: theEnv
+        run: |     
+          if [ "${{ github.event.inputs.environment }}" == "blue" ]
+          then
+                RATINGSAPI='https://app-ratings-vsabv73meajog.azurewebsites.net/api'
+                RG='team2App-bluedevenv'
+                APIM='apim-icecreamblue-3plwdf5dpxexw'
+          fi
+          if [ "${{ github.event.inputs.environment }}" == "green" ]
+          then
+                RATINGSAPI='https://app-ratings-w2y33gzfl7kbo.azurewebsites.net/api'
+                RG='team2App-greendevenv'
+                APIM='apim-icecreamgreen-nxwhongiagiiu'
+          fi
+          if [ "${{ github.event.inputs.environment }}" == "original" ]
+          then
+                RATINGSAPI='https://app-ratings-fi4a3nk4vlrka.azurewebsites.net/api'
+                RG='team2App-bluedevenv'
+                APIM='apim-icecreamblue-3plwdf5dpxexw'
+          fi
+          
+          echo $RATINGSAPI
+          echo $RG
+          echo $APIM
+          
+          echo "::set-output name=RATINGSAPI::$RATINGSAPI"
+          echo "::set-output name=RG::$RG"
+          echo "::set-output name=APIM::$APIM"
+            
+      - name: Azure Login
+        uses: Azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          enable-AzPSSession: true
+          environment: azurecloud
+          allow-no-subscriptions: false
+          
+      - name: Validate Infrastructure deployment
+        uses: Azure/cli@1.0.4
+        with:
+          azcliversion: ${{ env.AZCLIVERSION }}
+          inlineScript: |
+            RG='${{ steps.theEnv.outputs.RG}}'
+            APIMNAME='${{ steps.theEnv.outputs.APIM}}'
+            RATINGSURL='${{ steps.theEnv.outputs.RATINGSAPI}}'
+            
+            az deployment group validate -f apim-apis.bicep -g $RG -p apimName=$APIMNAME ratingsApiBaseUrl="$RATINGSURL"
+          
+      - name: Deploy Infrastructure
+        id: deployInfra
+        uses: Azure/cli@1.0.4
+        with:
+          azcliversion: ${{ env.AZCLIVERSION }}
+          inlineScript: |
+            RG='${{ steps.theEnv.outputs.RG}}'
+            APIMNAME='${{ steps.theEnv.outputs.APIM}}'
+            RATINGSURL='${{ steps.theEnv.outputs.RATINGSAPI}}'
+            
+            az deployment group create -f apim-apis.bicep -g $RG -p apimName=$APIMNAME ratingsApiBaseUrl="$RATINGSURL" --name $DEPNAME
+            
+            DEPSTATUS=$(az deployment operation group list --resource-group $RG --name $DEPNAME) #--query "[?properties.provisioningState=='Failed']"
+            echo $DEPSTATUS
+            
+             

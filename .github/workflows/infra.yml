@@ -1,0 +1,169 @@
+# This is a basic workflow to help you get started with Actions
+
+name: Deploy Infra
+on:
+  workflow_dispatch:
+    inputs:
+      RG:
+        description: "Resource Group to deploy to"
+        default: "team2App-devenv"
+        required: true
+        type: choice
+        options: 
+        - team2App-devenv
+        - team2App-bluedevenv
+        - team2App-greendevenv
+        
+      ApiName:
+        description: "Api Name"
+        default: "Ratings"
+        required: true
+        
+      ResNameSeed:
+        description: "Resource Name Seed"
+        default: "icecream"
+        required: true
+        
+      WebTrafficRestrict:
+        description: "Restrict web traffic from APIM to AzFnApp"
+        type: boolean
+        default: "false"
+        required: true
+        
+      runner:
+        description: "GitHub runner"
+        default: "ubuntu-latest"
+        required: true
+        type: choice
+        options: 
+        - open-hack
+        - ubuntu-latest
+        
+env:
+  #RG: "team2App-devenv" #The resource group we're deploying to.
+  #ParamFilePath: ".github/workflows_dep/AksDeploy-Basic.parameters.json" #Path to parameter file
+  #RESNAME: "Ratings" #Used in Azure Resource Naming, overrides the default in the parameter file
+  DEPNAME: "Dep${{ github.run_number }}" #Deployment Name
+  AZCLIVERSION: latest #2.30.0 #Pinning to a specific AZ CLI version
+
+jobs:
+  Deploy_GitHubHosted:
+    if: github.event.inputs.runner != 'open-hack'
+    concurrency: ci-${{ github.event.inputs.RG }}
+    runs-on: ${{ github.event.inputs.runner }} #self-hosted #ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v2
+      
+      - name: Job parameter check
+        run: |       
+          echo "RG is: ${{ github.event.inputs.RG }}"
+          
+          echo "ApiName is: ${{ github.event.inputs.ApiName }}"
+          echo "ResNameSeed is: ${{ github.event.inputs.ResNameSeed }}"
+          echo "Runner is ${{ github.event.inputs.runner }}"
+          echo "WebTrafficRestrict is: ${{ github.event.inputs.WebTrafficRestrict }}"
+          echo "Deployment name is ${{ env.DEPNAME }}"
+          echo "Ref is ${{ github.ref }}"
+          echo "EventTrigger name is ${{github.event_name}}"
+          echo "AZCLIVERSION is ${{ env.AZCLIVERSION }}"
+          
+          echo "Inputs are ${{ tojson(github.event.inputs) }}"
+          
+      - name: Azure Login
+        uses: Azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          enable-AzPSSession: true
+          environment: azurecloud
+          allow-no-subscriptions: false
+          
+      - name: Validate Infrastructure deployment
+        uses: Azure/cli@1.0.4
+        with:
+          azcliversion: ${{ env.AZCLIVERSION }}
+          inlineScript: |
+            RG="${{ github.event.inputs.RG }}"
+            RESNAME="${{ github.event.inputs.ApiName }}"
+            ResNameSeed="${{ github.event.inputs.ResNameSeed }}"
+            WebTrafficRestrict="${{ github.event.inputs.WebTrafficRestrict }}"
+            az deployment group validate -f main.bicep -g $RG -p appName=$RESNAME resNameSeed=$ResNameSeed restrictTrafficToJustAPIM=$WebTrafficRestrict
+          
+      - name: Deploy Infrastructure
+        id: deployInfra
+        uses: Azure/cli@1.0.4
+        with:
+          azcliversion: ${{ env.AZCLIVERSION }}
+          inlineScript: |
+            RG="${{ github.event.inputs.RG }}"
+            RESNAME="${{ github.event.inputs.ApiName }}"
+            ResNameSeed="${{ github.event.inputs.ResNameSeed }}"
+            WebTrafficRestrict="${{ github.event.inputs.WebTrafficRestrict }}"
+            
+            az deployment group create -f main.bicep -g $RG -p appName=$RESNAME  resNameSeed=$ResNameSeed restrictTrafficToJustAPIM=$WebTrafficRestrict --name $DEPNAME 
+            
+            DEPSTATUS=$(az deployment operation group list --resource-group $RG --name $DEPNAME) #--query "[?properties.provisioningState=='Failed']"
+            echo $DEPSTATUS
+            
+            #outputs
+            APPURL=$(az deployment group show -n $DEPNAME -g $RG --query "properties.outputs.appUrl.value" -o tsv)
+            echo "APPURL returned from az deployment = $APPURL"
+            echo "::set-output name=APPURL::$APPURL"
+            
+            APPNAME=$(az deployment group show -n $DEPNAME -g $RG --query "properties.outputs.appName.value" -o tsv)
+            echo "APPNAME returned from az deployment = $APPNAME"
+            echo "::set-output name=APPNAME::$APPNAME"
+#My runner doesn't want/need/like the docker tooling - so we're not going to do any clever actions.
+#Just normal AZ CLI Commands here :)
+  Deploy_SelfHosted:
+    if: github.event.inputs.runner == 'open-hack'
+    concurrency: ci-${{ github.event.inputs.RG }}
+    runs-on: ${{ github.event.inputs.runner }} #self-hosted #ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v2
+      
+      - name: Job parameter check
+        run: |       
+          echo "RG is: ${{ github.event.inputs.RG }}"
+          
+          echo "ApiName is: ${{ github.event.inputs.ApiName }}"
+          echo "ResNameSeed is: ${{ github.event.inputs.ResNameSeed }}"
+          echo "Runner is ${{ github.event.inputs.runner }}"
+          echo "WebTrafficRestrict is: ${{ github.event.inputs.WebTrafficRestrict }}"
+          echo "Deployment name is ${{ env.DEPNAME }}"
+          echo "Ref is ${{ github.ref }}"
+          echo "EventTrigger name is ${{github.event_name}}"
+          echo "AZCLIVERSION is ${{ env.AZCLIVERSION }}"
+          
+          echo "Inputs are ${{ tojson(github.event.inputs) }}"
+          
+      - name: Azure Login MSI
+        if: github.event.inputs.runner == 'open-hack'
+        run: |
+          az login --identity
+          
+      - name: Validate Infrastructure deployment
+        run: |
+          RG="${{ github.event.inputs.RG }}"
+          RESNAME="${{ github.event.inputs.ApiName }}"
+          ResNameSeed="${{ github.event.inputs.ResNameSeed }}"
+          WebTrafficRestrict="${{ github.event.inputs.WebTrafficRestrict }}"
+          az deployment group validate -f main.bicep -g $RG -p appName=$RESNAME resNameSeed=$ResNameSeed restrictTrafficToJustAPIM=$WebTrafficRestrict
+      - name: Deploy Infrastructure
+        id: deployInfra
+        run: |
+          RG="${{ github.event.inputs.RG }}"
+          RESNAME="${{ github.event.inputs.ApiName }}"
+          ResNameSeed="${{ github.event.inputs.ResNameSeed }}"
+          WebTrafficRestrict="${{ github.event.inputs.WebTrafficRestrict }}"
+          az deployment group create -f main.bicep -g $RG -p appName=$RESNAME  resNameSeed=$ResNameSeed restrictTrafficToJustAPIM=$WebTrafficRestrict --name $DEPNAME 
+          DEPSTATUS=$(az deployment operation group list --resource-group $RG --name $DEPNAME) #--query "[?properties.provisioningState=='Failed']"
+          echo $DEPSTATUS
+          #outputs
+          APPURL=$(az deployment group show -n $DEPNAME -g $RG --query "properties.outputs.appUrl.value" -o tsv)
+          echo "APPURL returned from az deployment = $APPURL"
+          echo "::set-output name=APPURL::$APPURL"
+          APPNAME=$(az deployment group show -n $DEPNAME -g $RG --query "properties.outputs.appName.value" -o tsv)
+          echo "APPNAME returned from az deployment = $APPNAME"
+          echo "::set-output name=APPNAME::$APPNAME"
